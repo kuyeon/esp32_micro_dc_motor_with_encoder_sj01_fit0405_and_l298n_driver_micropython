@@ -139,6 +139,68 @@ for speed in speeds:
     time.sleep(1)
 ```
 
+### RPM 모니터링 예제
+
+```python
+from motor_encoder import MotorWithEncoder
+import time
+
+motor = MotorWithEncoder()
+motor.reset_position()
+
+# 다양한 속도로 RPM 측정
+speeds = [30, 50, 70, 90]
+
+for speed in speeds:
+    print(f"속도 {speed}%로 5초간 회전하면서 RPM 측정")
+    motor.forward(speed)
+    
+    # 5초간 RPM 측정
+    for i in range(10):
+        time.sleep(0.5)
+        position = motor.get_position()
+        rpm = motor.get_speed_rpm()
+        direction = "정방향" if motor.get_direction() else "역방향"
+        
+        print(f"시간: {i*0.5:.1f}s, 위치: {position}, RPM: {rpm:.1f}, 방향: {direction}")
+    
+    motor.stop()
+    time.sleep(1)
+```
+
+### 실시간 RPM 측정 예제
+
+```python
+from motor_encoder import MotorWithEncoder
+import time
+
+motor = MotorWithEncoder()
+motor.reset_position()
+
+print("정방향으로 10초간 회전하면서 실시간 RPM 측정")
+motor.forward(60)  # 60% 속도
+
+start_time = time.time()
+last_position = 0
+
+while time.time() - start_time < 10:
+    current_time = time.time() - start_time
+    current_position = motor.get_position()
+    
+    # RPM 계산
+    if current_time > 0.5:
+        position_diff = current_position - last_position
+        time_diff = 0.1
+        rpm = (abs(position_diff) / 20) * (60 / time_diff)  # 20펄스/회전 가정
+        
+        print(f"시간: {current_time:.1f}s, 위치: {current_position}, RPM: {rpm:.1f}")
+    
+    last_position = current_position
+    time.sleep(0.1)
+
+motor.stop()
+```
+
 ## 파일 설명
 
 - **motor_encoder.py**: 메인 라이브러리 파일

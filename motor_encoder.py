@@ -32,6 +32,10 @@ class Encoder:
         self.direction = True  # True: 정방향, False: 역방향
         self.last_state_a = self.pin_a.value()
         
+        # RPM 계산을 위한 변수들
+        self.last_pulse_count = 0
+        self.last_time = time.ticks_ms()
+        
         # 인터럽트 설정
         self.pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, 
                       handler=self._encoder_interrupt)
@@ -72,6 +76,8 @@ class Encoder:
     def reset_count(self):
         """펄스 카운터 리셋"""
         self.pulse_count = 0
+        self.last_pulse_count = 0
+        self.last_time = time.ticks_ms()
         print("펄스 카운터 리셋됨")
     
     def get_speed_rpm(self, pulses_per_revolution=20):
@@ -87,6 +93,33 @@ class Encoder:
         # 실제로는 시간 간격을 측정하여 정확한 RPM 계산이 필요
         # 여기서는 간단한 예시로 펄스 카운트 기반 계산
         return abs(self.pulse_count) / pulses_per_revolution
+    
+    def get_current_rpm(self, pulses_per_revolution=20):
+        """
+        현재 RPM 계산 (시간 간격 기반)
+        
+        Args:
+            pulses_per_revolution (int): 회전당 펄스 수 (기본값: 20)
+        
+        Returns:
+            float: 현재 RPM 값
+        """
+        current_time = time.ticks_ms()
+        time_diff = time.ticks_diff(current_time, self.last_time)
+        
+        if time_diff > 100:  # 100ms 이상 경과했을 때만 계산
+            pulse_diff = self.pulse_count - self.last_pulse_count
+            
+            # RPM 계산: (펄스 차이 / 회전당 펄스 수) * (60000ms / 시간 차이ms)
+            rpm = (abs(pulse_diff) / pulses_per_revolution) * (60000 / time_diff)
+            
+            # 다음 계산을 위한 값 업데이트
+            self.last_pulse_count = self.pulse_count
+            self.last_time = current_time
+            
+            return rpm
+        
+        return 0.0
 
 
 class L298NDriver:
@@ -243,8 +276,12 @@ class MotorWithEncoder:
         self.encoder.reset_count()
     
     def get_speed_rpm(self, pulses_per_revolution=20):
-        """RPM 계산"""
+        """RPM 계산 (기본)"""
         return self.encoder.get_speed_rpm(pulses_per_revolution)
+    
+    def get_current_rpm(self, pulses_per_revolution=20):
+        """현재 RPM 계산 (시간 간격 기반)"""
+        return self.encoder.get_current_rpm(pulses_per_revolution)
     
     def move_to_position(self, target_position, speed=512, tolerance=5):
         """
