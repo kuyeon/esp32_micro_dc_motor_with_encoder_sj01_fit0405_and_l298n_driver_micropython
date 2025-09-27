@@ -7,11 +7,108 @@ SJ01 FIT0405 엔코더 모터와 L298N 드라이버를 제어합니다.
 - 엔코더 Phase B: GPIO 17 (인터럽트 핀)
 - L298N IN1: GPIO 4
 - L298N IN2: GPIO 5
+- L298N Enable: GPIO 6
 """
 
 import machine
 import time
 from machine import Pin, PWM
+
+
+class PIDController:
+    """PID 컨트롤러 클래스"""
+    
+    def __init__(self, kp=1.0, ki=0.0, kd=0.0, output_min=-100, output_max=100):
+        """
+        PID 컨트롤러 초기화
+        
+        Args:
+            kp (float): 비례 게인 (기본값: 1.0)
+            ki (float): 적분 게인 (기본값: 0.0)
+            kd (float): 미분 게인 (기본값: 0.0)
+            output_min (float): 최소 출력값 (기본값: -100)
+            output_max (float): 최대 출력값 (기본값: 100)
+        """
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.output_min = output_min
+        self.output_max = output_max
+        
+        # PID 상태 변수
+        self.previous_error = 0.0
+        self.integral = 0.0
+        self.last_time = time.ticks_ms()
+        
+        print(f"PID 컨트롤러 초기화 완료 - Kp:{kp}, Ki:{ki}, Kd:{kd}")
+    
+    def compute(self, setpoint, current_value):
+        """
+        PID 계산 수행
+        
+        Args:
+            setpoint (float): 목표값
+            current_value (float): 현재값
+        
+        Returns:
+            float: PID 출력값 (제한된 범위 내)
+        """
+        # 현재 시간
+        current_time = time.ticks_ms()
+        dt = time.ticks_diff(current_time, self.last_time) / 1000.0  # 초 단위
+        
+        if dt <= 0:
+            dt = 0.01  # 최소 시간 간격
+        
+        # 오차 계산
+        error = setpoint - current_value
+        
+        # 비례 항
+        proportional = self.kp * error
+        
+        # 적분 항
+        self.integral += error * dt
+        integral = self.ki * self.integral
+        
+        # 미분 항
+        derivative = self.kd * (error - self.previous_error) / dt
+        
+        # PID 출력 계산
+        output = proportional + integral + derivative
+        
+        # 출력 제한
+        output = max(self.output_min, min(self.output_max, output))
+        
+        # 상태 업데이트
+        self.previous_error = error
+        self.last_time = current_time
+        
+        return output
+    
+    def reset(self):
+        """PID 컨트롤러 리셋"""
+        self.previous_error = 0.0
+        self.integral = 0.0
+        self.last_time = time.ticks_ms()
+        print("PID 컨트롤러 리셋됨")
+    
+    def set_parameters(self, kp=None, ki=None, kd=None):
+        """
+        PID 파라미터 설정
+        
+        Args:
+            kp (float): 비례 게인
+            ki (float): 적분 게인
+            kd (float): 미분 게인
+        """
+        if kp is not None:
+            self.kp = kp
+        if ki is not None:
+            self.ki = ki
+        if kd is not None:
+            self.kd = kd
+        
+        print(f"PID 파라미터 업데이트 - Kp:{self.kp}, Ki:{self.ki}, Kd:{self.kd}")
 
 class Encoder:
     """엔코더 클래스 - 펄스 카운팅 및 방향 감지"""
@@ -80,12 +177,12 @@ class Encoder:
         self.last_time = time.ticks_ms()
         print("펄스 카운터 리셋됨")
     
-    def get_speed_rpm(self, pulses_per_revolution=20):
+    def get_speed_rpm(self, pulses_per_revolution=1920):
         """
         RPM 계산 (간단한 구현)
         
         Args:
-            pulses_per_revolution (int): 회전당 펄스 수 (기본값: 20)
+            pulses_per_revolution (int): 회전당 펄스 수 (기본값: 1920 - SJ01 FIT0405 스펙)
         
         Returns:
             float: RPM 값
@@ -94,12 +191,12 @@ class Encoder:
         # 여기서는 간단한 예시로 펄스 카운트 기반 계산
         return abs(self.pulse_count) / pulses_per_revolution
     
-    def get_current_rpm(self, pulses_per_revolution=20):
+    def get_current_rpm(self, pulses_per_revolution=1920):
         """
         현재 RPM 계산 (시간 간격 기반)
         
         Args:
-            pulses_per_revolution (int): 회전당 펄스 수 (기본값: 20)
+            pulses_per_revolution (int): 회전당 펄스 수 (기본값: 1920 - SJ01 FIT0405 스펙)
         
         Returns:
             float: 현재 RPM 값
@@ -163,13 +260,14 @@ class L298NDriver:
             speed (int): 속도 (0-100, 기본값: 50)
         """
         speed = max(0, min(100, speed))  # 0-100 범위 제한
-        
         # Enable 핀 PWM으로 속도 제어 (참고 예제 방식)
         self.pwm_enable.duty(self.duty_cycle(speed))
-        
         # 방향 제어
         self.in1.value(1)
         self.in2.value(0)
+
+        
+        
         
         print(f"정방향 회전 - 속도: {speed}% (Enable PWM)")
     
@@ -181,35 +279,36 @@ class L298NDriver:
             speed (int): 속도 (0-100, 기본값: 50)
         """
         speed = max(0, min(100, speed))  # 0-100 범위 제한
-        
         # Enable 핀 PWM으로 속도 제어 (참고 예제 방식)
         self.pwm_enable.duty(self.duty_cycle(speed))
-        
         # 방향 제어
         self.in1.value(0)
         self.in2.value(1)
+        
+        
         
         print(f"역방향 회전 - 속도: {speed}% (Enable PWM)")
     
     def stop(self):
         """모터 정지"""
-        self.pwm_enable.duty(0)  # Enable 핀 PWM 비활성화
         self.in1.value(0)
         self.in2.value(0)
+        self.pwm_enable.duty(0)  # Enable 핀 PWM 비활성화
+        
         print("모터 정지")
     
     def duty_cycle(self, speed):
         """
-        속도를 duty cycle로 변환 (참고 예제 방식)
+        속도를 duty cycle로 변환 (안전한 범위로 제한)
         
         Args:
             speed (int): 속도 (0-100)
         
         Returns:
-            int: duty cycle (0-1023)
+            int: duty cycle (625-1023, 확장된 범위)
         """
-        min_duty = 750  # 참고 예제 값
-        max_duty = 1023
+        min_duty = 625  # 최소 duty
+        max_duty = 1023  # 최대 duty
         
         if speed <= 0 or speed > 100:
             duty_cycle = 0
@@ -219,11 +318,49 @@ class L298NDriver:
         return duty_cycle
     
     def brake(self):
-        """모터 브레이크 (단축)"""
-        self.pwm_enable.duty(1023)  # Enable 핀 최대 출력
+        """모터 브레이크 (최대 duty cycle 사용)"""
+        self.pwm_enable.duty(1023)  # 최대 duty cycle 사용
         self.in1.value(1)
         self.in2.value(1)
         print("모터 브레이크")
+    
+    def safe_forward(self, speed=50):
+        """
+        안전한 정방향 회전 (duty cycle 제한)
+        
+        Args:
+            speed (int): 속도 (0-100, 기본값: 50)
+        """
+        speed = max(0, min(100, speed))  # 0-100 범위 제한
+        duty = self.duty_cycle(speed)
+        
+        # 안전한 duty cycle로 속도 제어
+        self.pwm_enable.duty(duty)
+        
+        # 방향 제어
+        self.in1.value(1)
+        self.in2.value(0)
+        
+        print(f"안전한 정방향 회전 - 속도: {speed}% (duty: {duty})")
+    
+    def safe_backward(self, speed=50):
+        """
+        안전한 역방향 회전 (duty cycle 제한)
+        
+        Args:
+            speed (int): 속도 (0-100, 기본값: 50)
+        """
+        speed = max(0, min(100, speed))  # 0-100 범위 제한
+        duty = self.duty_cycle(speed)
+        
+        # 안전한 duty cycle로 속도 제어
+        self.pwm_enable.duty(duty)
+        
+        # 방향 제어
+        self.in1.value(0)
+        self.in2.value(1)
+        
+        print(f"안전한 역방향 회전 - 속도: {speed}% (duty: {duty})")
     
 
 
@@ -244,6 +381,10 @@ class MotorWithEncoder:
         """
         self.encoder = Encoder(encoder_pin_a, encoder_pin_b)
         self.motor = L298NDriver(motor_in1, motor_in2, motor_enable)
+        
+        # PID 컨트롤러 초기화
+        self.position_pid = PIDController(kp=0.5, ki=0.0, kd=0.1, output_min=-100, output_max=100)
+        self.speed_pid = PIDController(kp=1.0, ki=0.1, kd=0.05, output_min=-100, output_max=100)
         
         print("모터 엔코더 시스템 초기화 완료")
     
@@ -275,11 +416,11 @@ class MotorWithEncoder:
         """위치 리셋"""
         self.encoder.reset_count()
     
-    def get_speed_rpm(self, pulses_per_revolution=20):
+    def get_speed_rpm(self, pulses_per_revolution=1920):
         """RPM 계산 (기본)"""
         return self.encoder.get_speed_rpm(pulses_per_revolution)
     
-    def get_current_rpm(self, pulses_per_revolution=20):
+    def get_current_rpm(self, pulses_per_revolution=1920):
         """현재 RPM 계산 (시간 간격 기반)"""
         return self.encoder.get_current_rpm(pulses_per_revolution)
     
@@ -308,6 +449,78 @@ class MotorWithEncoder:
             self.backward(speed)
         
         return False
+    
+    def move_to_position_pid(self, target_position, tolerance=5):
+        """
+        PID 제어를 사용한 정밀한 위치 제어
+        
+        Args:
+            target_position (int): 목표 위치
+            tolerance (int): 허용 오차
+        
+        Returns:
+            bool: 목표 위치 도달 여부
+        """
+        current_position = self.get_position()
+        
+        if abs(target_position - current_position) <= tolerance:
+            self.stop()
+            return True
+        
+        # PID 계산
+        pid_output = self.position_pid.compute(target_position, current_position)
+        
+        # PID 출력을 속도로 변환 (절댓값)
+        speed = abs(pid_output)
+        speed = max(10, min(100, speed))  # 최소 10%, 최대 100%
+        
+        # 방향에 따라 모터 제어
+        if pid_output > 0:
+            self.forward(speed)
+        else:
+            self.backward(speed)
+        
+        return False
+    
+    def control_speed_pid(self, target_rpm):
+        """
+        PID 제어를 사용한 속도 제어
+        
+        Args:
+            target_rpm (float): 목표 RPM
+        
+        Returns:
+            float: 현재 RPM
+        """
+        current_rpm = self.get_current_rpm()
+        
+        # PID 계산
+        pid_output = self.speed_pid.compute(target_rpm, current_rpm)
+        
+        # PID 출력을 속도로 변환
+        speed = abs(pid_output)
+        speed = max(10, min(100, speed))  # 최소 10%, 최대 100%
+        
+        # 방향에 따라 모터 제어
+        if pid_output > 0:
+            self.forward(speed)
+        else:
+            self.backward(speed)
+        
+        return current_rpm
+    
+    def set_position_pid_parameters(self, kp=None, ki=None, kd=None):
+        """위치 제어 PID 파라미터 설정"""
+        self.position_pid.set_parameters(kp, ki, kd)
+    
+    def set_speed_pid_parameters(self, kp=None, ki=None, kd=None):
+        """속도 제어 PID 파라미터 설정"""
+        self.speed_pid.set_parameters(kp, ki, kd)
+    
+    def reset_pid_controllers(self):
+        """모든 PID 컨트롤러 리셋"""
+        self.position_pid.reset()
+        self.speed_pid.reset()
     
     def print_status(self):
         """현재 상태 출력"""

@@ -201,6 +201,35 @@ while time.time() - start_time < 10:
 motor.stop()
 ```
 
+### PID 제어 예제
+
+```python
+from motor_encoder import MotorWithEncoder
+import time
+
+motor = MotorWithEncoder()
+
+# PID 위치 제어
+motor.set_position_pid_parameters(kp=0.8, ki=0.0, kd=0.2)
+target_position = 100
+
+while not motor.move_to_position_pid(target_position, tolerance=3):
+    current_pos = motor.get_position()
+    print(f"현재 위치: {current_pos}, 목표: {target_position}")
+    time.sleep(0.1)
+
+# PID 속도 제어
+motor.set_speed_pid_parameters(kp=2.0, ki=0.1, kd=0.1)
+target_rpm = 100
+
+for i in range(50):  # 5초간
+    current_rpm = motor.control_speed_pid(target_rpm)
+    print(f"현재 RPM: {current_rpm:.1f}, 목표: {target_rpm}")
+    time.sleep(0.1)
+
+motor.stop()
+```
+
 ## 파일 설명
 
 - **motor_encoder.py**: 메인 라이브러리 파일
