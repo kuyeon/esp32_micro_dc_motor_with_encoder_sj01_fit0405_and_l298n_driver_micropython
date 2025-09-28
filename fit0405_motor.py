@@ -1,5 +1,5 @@
 """
-ESP32용 마이크로 DC 모터 엔코더 및 L298N 드라이버 라이브러리
+ESP32용 FIT0405 마이크로 DC 모터 엔코더 및 L298N 드라이버 라이브러리
 SJ01 FIT0405 엔코더 모터와 L298N 드라이버를 제어합니다.
 
 연결:
@@ -15,7 +15,7 @@ import time
 from machine import Pin, PWM
 
 
-class PIDController:
+class PID:
     """PID 컨트롤러 클래스"""
     
     def __init__(self, kp=1.0, ki=0.0, kd=0.0, output_min=-100, output_max=100):
@@ -110,8 +110,9 @@ class PIDController:
         
         print(f"PID 파라미터 업데이트 - Kp:{self.kp}, Ki:{self.ki}, Kd:{self.kd}")
 
-class Encoder:
-    """엔코더 클래스 - 펄스 카운팅 및 방향 감지"""
+
+class SJ01Encoder:
+    """SJ01 FIT0405 엔코더 클래스 - 펄스 카운팅 및 방향 감지"""
     
     def __init__(self, pin_a=18, pin_b=17):
         """
@@ -137,7 +138,7 @@ class Encoder:
         self.pin_a.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, 
                       handler=self._encoder_interrupt)
         
-        print("엔코더 초기화 완료")
+        print("SJ01 엔코더 초기화 완료")
         print(f"Phase A: GPIO {pin_a}")
         print(f"Phase B: GPIO {pin_b}")
     
@@ -157,10 +158,10 @@ class Encoder:
         self.last_state_a = current_state_a
         
         # 펄스 카운터 업데이트
-        if not self.direction:
-            self.pulse_count += 1
+        if self.direction:
+            self.pulse_count += 1  # 정방향일 때 증가
         else:
-            self.pulse_count -= 1
+            self.pulse_count -= 1  # 역방향일 때 감소
     
     def get_pulse_count(self):
         """현재 펄스 카운트 반환"""
@@ -254,38 +255,33 @@ class L298NDriver:
     
     def forward(self, speed=50):
         """
-        정방향 회전 (참고 예제 방식 - Enable 핀 PWM으로 속도 제어)
+        정방향 회전 (Enable 핀 PWM으로 속도 제어)
         
         Args:
             speed (int): 속도 (0-100, 기본값: 50)
         """
         speed = max(0, min(100, speed))  # 0-100 범위 제한
-        # Enable 핀 PWM으로 속도 제어 (참고 예제 방식)
+        # Enable 핀 PWM으로 속도 제어
         self.pwm_enable.duty(self.duty_cycle(speed))
         # 방향 제어
         self.in1.value(1)
         self.in2.value(0)
-
-        
-        
         
         print(f"정방향 회전 - 속도: {speed}% (Enable PWM)")
     
     def backward(self, speed=50):
         """
-        역방향 회전 (참고 예제 방식 - Enable 핀 PWM으로 속도 제어)
+        역방향 회전 (Enable 핀 PWM으로 속도 제어)
         
         Args:
             speed (int): 속도 (0-100, 기본값: 50)
         """
         speed = max(0, min(100, speed))  # 0-100 범위 제한
-        # Enable 핀 PWM으로 속도 제어 (참고 예제 방식)
+        # Enable 핀 PWM으로 속도 제어
         self.pwm_enable.duty(self.duty_cycle(speed))
         # 방향 제어
         self.in1.value(0)
         self.in2.value(1)
-        
-        
         
         print(f"역방향 회전 - 속도: {speed}% (Enable PWM)")
     
@@ -361,11 +357,10 @@ class L298NDriver:
         self.in2.value(1)
         
         print(f"안전한 역방향 회전 - 속도: {speed}% (duty: {duty})")
-    
 
 
-class MotorWithEncoder:
-    """엔코더가 장착된 모터 통합 제어 클래스"""
+class FIT0405Motor:
+    """FIT0405 엔코더 모터 통합 제어 클래스"""
     
     def __init__(self, encoder_pin_a=18, encoder_pin_b=17, 
                  motor_in1=4, motor_in2=5, motor_enable=6):
@@ -379,20 +374,20 @@ class MotorWithEncoder:
             motor_in2 (int): 모터 드라이버 IN2 핀 (기본값: 5)
             motor_enable (int): 모터 드라이버 Enable 핀 (기본값: 6)
         """
-        self.encoder = Encoder(encoder_pin_a, encoder_pin_b)
+        self.encoder = SJ01Encoder(encoder_pin_a, encoder_pin_b)
         self.motor = L298NDriver(motor_in1, motor_in2, motor_enable)
         
         # PID 컨트롤러 초기화
-        self.position_pid = PIDController(kp=0.5, ki=0.0, kd=0.1, output_min=-100, output_max=100)
-        self.speed_pid = PIDController(kp=1.0, ki=0.1, kd=0.05, output_min=-100, output_max=100)
+        self.position_pid = PID(kp=0.1, ki=0.1, kd=0.1, output_min=-100, output_max=100)
+        self.speed_pid = PID(kp=3.0, ki=0.0, kd=0.0, output_min=-100, output_max=100)
         
-        print("모터 엔코더 시스템 초기화 완료")
+        print("FIT0405 모터 엔코더 시스템 초기화 완료")
     
-    def forward(self, speed=512):
+    def forward(self, speed=50):
         """정방향 회전"""
         self.motor.forward(speed)
     
-    def backward(self, speed=512):
+    def backward(self, speed=50):
         """역방향 회전"""
         self.motor.backward(speed)
     
@@ -424,13 +419,13 @@ class MotorWithEncoder:
         """현재 RPM 계산 (시간 간격 기반)"""
         return self.encoder.get_current_rpm(pulses_per_revolution)
     
-    def move_to_position(self, target_position, speed=512, tolerance=5):
+    def move_to_position(self, target_position, speed=50, tolerance=5):
         """
         특정 위치로 이동 (간단한 PID 제어)
         
         Args:
             target_position (int): 목표 위치
-            speed (int): 속도 (0-1023)
+            speed (int): 속도 (0-100)
             tolerance (int): 허용 오차
         
         Returns:
@@ -524,8 +519,8 @@ class MotorWithEncoder:
     
     def print_status(self):
         """현재 상태 출력"""
-        print("=== 모터 상태 ===")
+        print("=== FIT0405 모터 상태 ===")
         print(f"위치: {self.get_position()}")
         print(f"방향: {'정방향' if self.get_direction() else '역방향'}")
         print(f"RPM: {self.get_speed_rpm():.2f}")
-        print("================")
+        print("========================")
