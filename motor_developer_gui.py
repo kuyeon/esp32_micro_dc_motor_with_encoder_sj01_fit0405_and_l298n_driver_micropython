@@ -54,6 +54,7 @@ class UARTMotorController:
     def send_command(self, command, data=None):
         """ESP32에 명령 전송"""
         if not self.connected:
+            print(f"UART 연결되지 않음 - 명령: {command}")
             return None
             
         try:
@@ -64,13 +65,26 @@ class UARTMotorController:
             }
             
             json_str = json.dumps(message) + '\n'
-            self.serial_conn.write(json_str.encode())
+            print(f"전송할 JSON: {json_str.strip()}")  # 디버깅 활성화
             
-            # 응답 대기
-            response = self.serial_conn.readline().decode().strip()
+            # 데이터 전송
+            bytes_sent = self.serial_conn.write(json_str.encode())
+            print(f"전송된 바이트 수: {bytes_sent}")
+            
+            # 전송 후 잠시 대기
+            time.sleep(0.1)
+            
+            # 응답 대기 (타임아웃 증가)
+            self.serial_conn.timeout = 2  # 2초로 증가
+            response = self.serial_conn.readline()
+            
             if response:
-                return json.loads(response)
-            return None
+                response_str = response.decode().strip()
+                print(f"수신된 응답: {response_str}")
+                return json.loads(response_str)
+            else:
+                print("응답 없음 - ESP32에서 데이터를 수신하지 못함")
+                return None
             
         except Exception as e:
             print(f"명령 전송 실패: {e}")
@@ -173,23 +187,31 @@ class DataLogger(QThread):
                 self.kp, self.ki, self.kd, current_pos
             )
             
-            time.sleep(0.1)
+            time.sleep(2.0)  # 10년 전 컴퓨터 최적화: 2초로 대폭 증가
 
 class MotorDeveloperGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.motor = UARTMotorController('COM3', 115200)
+        # ESP32 USB 포트: COM3, 디버깅 터미널 포트: COM3
+        self.motor = UARTMotorController('COM3', 9600)
         self.data_logger = DataLogger(self.motor)
         self.data_logger.data_updated.connect(self.update_data)
         
+        # 메모리 최적화를 위한 데이터 구조
         self.data_history = []
         self.is_testing = False
+        
+        # 성능 최적화를 위한 캐시 변수들
+        self._last_rpm = 0
+        self._last_pos = 0
+        self._last_log_time = 0
+        self._last_graph_update = 0
         
         self.init_ui()
         self.setup_connections()
         
-        # UART 연결 시도
-        self.connect_uart()
+        # UART 연결 시도 제거 - 처음에는 연결하지 않은 상태로 시작
+        # self.connect_uart()
         
     def connect_uart(self):
         """UART 연결"""
@@ -205,10 +227,20 @@ class MotorDeveloperGUI(QMainWindow):
         self.data_logger.data_updated.connect(self.update_data)
         
         if self.motor.connect():
-            self.log_message(f"UART 연결 성공 - {port} @ {baudrate}")
-            self.statusBar().showMessage(f"UART 연결됨 - {port}")
+            self.log_message(f"UART 연결 성공 - {port} @ {baudrate} (ESP32 USB 포트)")
+            self.log_message("ESP32 UART0 핀: TX=GPIO1, RX=GPIO3")
+            self.statusBar().showMessage(f"UART 연결됨 - {port} (ESP32 USB 포트)")
+            
+            # 연결 테스트
+            self.log_message("ESP32 연결 테스트 중...")
+            test_response = self.motor.send_command('ping')
+            if test_response:
+                self.log_message("ESP32 연결 테스트 성공!")
+            else:
+                self.log_message("ESP32 연결 테스트 실패 - 명령 전송 불가")
         else:
-            self.log_message(f"UART 연결 실패 - {port} @ {baudrate}")
+            self.log_message(f"UART 연결 실패 - {port} @ {baudrate} (ESP32 USB 포트)")
+            self.log_message("ESP32 UART0 핀 확인 필요: TX=GPIO1, RX=GPIO3")
             self.statusBar().showMessage("UART 연결 실패")
             
     def disconnect_uart(self):
@@ -285,19 +317,19 @@ class MotorDeveloperGUI(QMainWindow):
         layout = QVBoxLayout(tab)
         
         # UART 연결 그룹
-        uart_group = QGroupBox("UART 연결")
+        uart_group = QGroupBox("UART 연결 (ESP32 UART0: GPIO1(TX), GPIO3(RX))")
         uart_layout = QGridLayout(uart_group)
         
         uart_layout.addWidget(QLabel("포트:"), 0, 0)
         self.port_combo = QComboBox()
-        self.port_combo.addItems(['COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8'])
+        self.port_combo.addItems(['COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8'])
         self.port_combo.setCurrentText('COM3')
         uart_layout.addWidget(self.port_combo, 0, 1)
         
         uart_layout.addWidget(QLabel("보드레이트:"), 1, 0)
         self.baudrate_combo = QComboBox()
         self.baudrate_combo.addItems(['9600', '19200', '38400', '57600', '115200'])
-        self.baudrate_combo.setCurrentText('115200')
+        self.baudrate_combo.setCurrentText('9600')
         uart_layout.addWidget(self.baudrate_combo, 1, 1)
         
         self.connect_btn = QPushButton("연결")
@@ -348,6 +380,15 @@ class MotorDeveloperGUI(QMainWindow):
         self.reset_position_btn.clicked.connect(self.reset_position)
         encoder_layout.addWidget(self.reset_position_btn)
         
+        # 하드웨어 테스트 버튼 추가
+        self.test_motor_btn = QPushButton("모터 하드웨어 테스트")
+        self.test_motor_btn.clicked.connect(self.test_motor_hardware)
+        encoder_layout.addWidget(self.test_motor_btn)
+        
+        self.check_pins_btn = QPushButton("핀 상태 확인")
+        self.check_pins_btn.clicked.connect(self.check_pin_status)
+        encoder_layout.addWidget(self.check_pins_btn)
+        
         layout.addWidget(encoder_group)
         
         # 현재 상태 그룹
@@ -371,10 +412,10 @@ class MotorDeveloperGUI(QMainWindow):
         
         layout.addWidget(status_group)
         
-        # 상태 업데이트 타이머
+        # 상태 업데이트 타이머 (극한 최적화: 1초로 증가)
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status)
-        self.status_timer.start(100)  # 100ms마다 업데이트
+        self.status_timer.start(3000)  # 3초마다 업데이트 (10년 전 컴퓨터 최적화)
         
         return tab
         
@@ -560,17 +601,18 @@ class MotorDeveloperGUI(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        # 그래프 위젯
+        # 그래프 위젯 (10년 전 컴퓨터 최적화)
         self.graph_widget = pg.PlotWidget()
         self.graph_widget.setBackground('w')
         self.graph_widget.setLabel('left', 'RPM')
         self.graph_widget.setLabel('bottom', 'Time (s)')
-        self.graph_widget.addLegend()
-        self.graph_widget.showGrid(x=True, y=True)
+        # 범례와 그리드 제거로 성능 향상
+        # self.graph_widget.addLegend()
+        # self.graph_widget.showGrid(x=True, y=True)
         
-        # 그래프 라인들
-        self.target_line = self.graph_widget.plot([], [], pen='r', name='목표 RPM')
-        self.actual_line = self.graph_widget.plot([], [], pen='b', name='실제 RPM')
+        # 그래프 라인들 (10년 전 컴퓨터 최적화 - 더 단순한 펜 사용)
+        self.target_line = self.graph_widget.plot([], [], pen=pg.mkPen('r', width=1))
+        self.actual_line = self.graph_widget.plot([], [], pen=pg.mkPen('b', width=1))
         
         layout.addWidget(self.graph_widget)
         
@@ -594,28 +636,71 @@ class MotorDeveloperGUI(QMainWindow):
         pass
         
     def log_message(self, message):
-        """로그 메시지 출력"""
+        """로그 메시지 출력 (10년 전 컴퓨터 최적화)"""
+        # 로그 출력 빈도 제한
+        if not hasattr(self, '_last_log_time'):
+            self._last_log_time = 0
+        
+        current_time = time.time()
+        if current_time - self._last_log_time < 0.5:  # 0.5초마다만 로그 출력
+            return
+            
+        self._last_log_time = current_time
         timestamp = time.strftime("%H:%M:%S")
         self.log_text.append(f"[{timestamp}] {message}")
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
+        
+        # 로그가 너무 많아지면 오래된 것 삭제 (10년 전 컴퓨터 최적화)
+        if self.log_text.document().blockCount() > 20:
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.movePosition(cursor.Down, cursor.KeepAnchor, 5)
+            cursor.removeSelectedText()
+        
+        # 스크롤은 필요할 때만 (10년 전 컴퓨터 최적화)
+        if self.log_text.verticalScrollBar().value() >= self.log_text.verticalScrollBar().maximum() - 5:
+            self.log_text.verticalScrollBar().setValue(
+                self.log_text.verticalScrollBar().maximum()
+            )
         
     def update_status(self):
-        """상태 업데이트"""
+        """상태 업데이트 (극한 최적화)"""
         try:
+            # 연결 상태 확인 후에만 데이터 요청
+            if not self.motor.connected:
+                return
+            
+            # 더 큰 변화가 있을 때만 업데이트 (10년 전 컴퓨터 최적화)
             current_rpm = self.motor.get_current_rpm()
             current_pos = self.motor.get_position()
-            direction = self.motor.get_direction()
             
+            # 값이 크게 변경되었을 때만 UI 업데이트 (임계값 증가)
+            rpm_changed = not hasattr(self, '_last_rpm') or abs(current_rpm - self._last_rpm) > 2.0
+            pos_changed = not hasattr(self, '_last_pos') or abs(current_pos - self._last_pos) > 10
+            
+            if not (rpm_changed or pos_changed):
+                return
+                
             self.current_rpm_label.setText(f"{current_rpm:.1f}")
             self.current_position_label.setText(str(current_pos))
-            self.direction_label.setText("정방향" if direction else "역방향" if current_rpm > 0 else "정지")
-        except:
+            
+            # 방향은 RPM이 0이 아닐 때만 계산
+            if current_rpm > 0:
+                direction = self.motor.get_direction()
+                self.direction_label.setText("정방향" if direction else "역방향")
+            else:
+                self.direction_label.setText("정지")
+            
+            # 마지막 값 저장
+            self._last_rpm = current_rpm
+            self._last_pos = current_pos
+            
+        except Exception:
+            # 오류 발생 시 아무것도 하지 않음 (10년 전 컴퓨터 최적화)
             pass
             
     def update_data(self, timestamp, target_rpm, actual_rpm, kp, ki, kd, position):
-        """데이터 업데이트"""
+        """데이터 업데이트 (10년 전 컴퓨터 최적화)"""
+        # 데이터 추가
         self.data_history.append({
             'time': timestamp,
             'target_rpm': target_rpm,
@@ -626,51 +711,110 @@ class MotorDeveloperGUI(QMainWindow):
             'position': position
         })
         
-        # 그래프 업데이트 (최근 100개 데이터만)
-        if len(self.data_history) > 100:
-            self.data_history = self.data_history[-100:]
-            
+        # 그래프 업데이트 (최근 10개 데이터만 - 10년 전 컴퓨터 최적화)
+        if len(self.data_history) > 10:
+            self.data_history = self.data_history[-10:]
+        
+        # 그래프 업데이트는 별도로 처리 (빈도 제한)
         self.update_graph()
         
     def update_graph(self):
-        """그래프 업데이트"""
+        """그래프 업데이트 (10년 전 컴퓨터 최적화)"""
         if not self.data_history:
             return
+        
+        # 데이터가 충분할 때만 업데이트 (10년 전 컴퓨터 최적화)
+        if len(self.data_history) < 5:
+            return
+        
+        # 그래프 업데이트 빈도 제한
+        if not hasattr(self, '_last_graph_update'):
+            self._last_graph_update = 0
+            
+        current_time = time.time()
+        if current_time - self._last_graph_update < 1.0:  # 1초마다만 그래프 업데이트
+            return
+            
+        self._last_graph_update = current_time
             
         times = [d['time'] for d in self.data_history]
         target_rpms = [d['target_rpm'] for d in self.data_history]
         actual_rpms = [d['actual_rpm'] for d in self.data_history]
         
+        # 그래프 업데이트 (배치 처리)
         self.target_line.setData(times, target_rpms)
         self.actual_line.setData(times, actual_rpms)
         
     def auto_scale_graph(self):
-        """그래프 자동 스케일"""
+        """그래프 자동 스케일 (10년 전 컴퓨터 최적화)"""
+        # 자동 스케일링도 빈도 제한
+        if not hasattr(self, '_last_scale_time'):
+            self._last_scale_time = 0
+            
+        current_time = time.time()
+        if current_time - self._last_scale_time < 2.0:  # 2초마다만 스케일링
+            return
+            
+        self._last_scale_time = current_time
         self.graph_widget.enableAutoRange()
         
     def clear_graph(self):
-        """그래프 초기화"""
+        """그래프 초기화 (10년 전 컴퓨터 최적화)"""
         self.data_history.clear()
         self.target_line.setData([], [])
         self.actual_line.setData([], [])
+        
+        # 메모리 정리
+        import gc
+        gc.collect()
+        
         self.log_message("그래프 초기화됨")
         
     def forward_motor(self):
-        """정방향 모터 제어"""
+        """정방향 모터 제어 (10년 전 컴퓨터 최적화)"""
         speed = self.speed_spinbox.value()
-        self.motor.forward(speed)
-        self.log_message(f"정방향 {speed}% 시작")
+        self.log_message(f"정방향 {speed}% 명령 전송 중...")
+        
+        # 연결 상태 확인
+        if not self.motor.connected:
+            self.log_message("오류: UART 연결되지 않음")
+            return
+        
+        # UI 반응성을 위해 별도 스레드에서 실행
+        threading.Thread(target=self._forward_motor_thread, args=(speed,), daemon=True).start()
+        
+    def _forward_motor_thread(self, speed):
+        """정방향 모터 제어 스레드"""
+        # 명령 전송
+        response = self.motor.forward(speed)
+        if response:
+            self.log_message(f"정방향 {speed}% 명령 전송 성공")
+            self.log_message(f"ESP32 응답: {response}")
+        else:
+            self.log_message(f"정방향 {speed}% 명령 전송 실패 - 응답 없음")
         
     def backward_motor(self):
-        """역방향 모터 제어"""
+        """역방향 모터 제어 (10년 전 컴퓨터 최적화)"""
         speed = self.speed_spinbox.value()
-        self.motor.backward(speed)
         self.log_message(f"역방향 {speed}% 시작")
         
+        # UI 반응성을 위해 별도 스레드에서 실행
+        threading.Thread(target=self._backward_motor_thread, args=(speed,), daemon=True).start()
+        
+    def _backward_motor_thread(self, speed):
+        """역방향 모터 제어 스레드"""
+        self.motor.backward(speed)
+        
     def stop_motor(self):
-        """모터 정지"""
-        self.motor.stop()
+        """모터 정지 (10년 전 컴퓨터 최적화)"""
         self.log_message("모터 정지")
+        
+        # UI 반응성을 위해 별도 스레드에서 실행
+        threading.Thread(target=self._stop_motor_thread, daemon=True).start()
+        
+    def _stop_motor_thread(self):
+        """모터 정지 스레드"""
+        self.motor.stop()
         
     def reset_position(self):
         """위치 리셋"""
@@ -682,6 +826,37 @@ class MotorDeveloperGUI(QMainWindow):
         self.log_message("엔코더 테스트 시작 - 모터를 수동으로 회전시켜보세요")
         # 실제 테스트는 별도 스레드에서 실행
         threading.Thread(target=self._encoder_test_thread, daemon=True).start()
+    
+    def test_motor_hardware(self):
+        """모터 하드웨어 테스트"""
+        if not self.motor.connected:
+            self.log_message("오류: UART 연결되지 않음")
+            return
+            
+        self.log_message("모터 하드웨어 테스트 시작")
+        response = self.motor.send_command('test_motor')
+        if response:
+            self.log_message("모터 하드웨어 테스트 완료")
+            self.log_message(f"ESP32 응답: {response}")
+        else:
+            self.log_message("모터 하드웨어 테스트 실패 - 응답 없음")
+    
+    def check_pin_status(self):
+        """핀 상태 확인"""
+        if not self.motor.connected:
+            self.log_message("오류: UART 연결되지 않음")
+            return
+            
+        self.log_message("핀 상태 확인 중")
+        response = self.motor.send_command('check_pins')
+        if response and 'data' in response:
+            pin_data = response['data']
+            self.log_message("=== 핀 상태 ===")
+            for pin_name, status in pin_data.items():
+                self.log_message(f"{pin_name}: {status}")
+            self.log_message("===============")
+        else:
+            self.log_message("핀 상태 확인 실패 - 응답 없음")
         
     def _encoder_test_thread(self):
         """엔코더 테스트 스레드"""
@@ -922,10 +1097,15 @@ class MotorDeveloperGUI(QMainWindow):
         self.log_message("성능 분석 완료")
         
     def clear_data(self):
-        """데이터 초기화"""
+        """데이터 초기화 (10년 전 컴퓨터 최적화)"""
         self.data_history.clear()
         self.clear_graph()
         self.analysis_table.setRowCount(0)
+        
+        # 메모리 정리
+        import gc
+        gc.collect()
+        
         self.log_message("모든 데이터 초기화됨")
         
     def save_data(self):

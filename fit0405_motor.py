@@ -261,13 +261,20 @@ class L298NDriver:
             speed (int): 속도 (0-100, 기본값: 50)
         """
         speed = max(0, min(100, speed))  # 0-100 범위 제한
+        duty = self.duty_cycle(speed)
+        
+        print(f"L298N.forward() 시작 - 속도: {speed}%, duty: {duty}")
+        
         # Enable 핀 PWM으로 속도 제어
-        self.pwm_enable.duty(self.duty_cycle(speed))
+        self.pwm_enable.duty(duty)
+        print(f"PWM duty 설정: {duty}")
+        
         # 방향 제어
         self.in1.value(1)
         self.in2.value(0)
+        print(f"방향 핀 설정 - IN1: 1, IN2: 0")
         
-        print(f"정방향 회전 - 속도: {speed}% (Enable PWM)")
+        print(f"정방향 회전 완료 - 속도: {speed}% (Enable PWM)")
     
     def backward(self, speed=50):
         """
@@ -385,7 +392,9 @@ class FIT0405Motor:
     
     def forward(self, speed=50):
         """정방향 회전"""
+        print(f"FIT0405Motor.forward() 호출됨 - 속도: {speed}%")
         self.motor.forward(speed)
+        print(f"FIT0405Motor.forward() 완료")
     
     def backward(self, speed=50):
         """역방향 회전"""
