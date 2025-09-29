@@ -79,6 +79,14 @@ class PID:
         # 출력 제한
         output = max(self.output_min, min(self.output_max, output))
         
+        # 디버깅 출력 (처음 몇 번만)
+        if not hasattr(self, '_debug_count'):
+            self._debug_count = 0
+        if self._debug_count < 5:
+            print(f"PID 계산 - 목표: {setpoint}, 현재: {current_value:.2f}, 오차: {error:.2f}, 출력: {output:.2f}")
+            print(f"  P: {proportional:.2f}, I: {integral:.2f}, D: {derivative:.2f}")
+            self._debug_count += 1
+        
         # 상태 업데이트
         self.previous_error = error
         self.last_time = current_time
@@ -505,13 +513,44 @@ class FIT0405Motor:
         speed = abs(pid_output)
         speed = max(10, min(100, speed))  # 최소 10%, 최대 100%
         
+        print(f"PID 속도 제어 - 목표: {target_rpm}RPM, 현재: {current_rpm:.2f}RPM, PID출력: {pid_output:.2f}, 속도: {speed}%")
+        
+        # 방향에 따라 모터 제어
+        if pid_output > 0:
+            print(f"정방향 모터 제어 - 속도: {speed}%")
+            self.forward(speed)
+        else:
+            print(f"역방향 모터 제어 - 속도: {speed}%")
+            self.backward(speed)
+        
+        return current_rpm
+    
+    def control_position_pid(self, target_position):
+        """
+        PID 제어를 사용한 위치 제어 (ESP32 서버용)
+        
+        Args:
+            target_position (int): 목표 위치
+        
+        Returns:
+            int: 현재 위치
+        """
+        current_position = self.get_position()
+        
+        # PID 계산
+        pid_output = self.position_pid.compute(target_position, current_position)
+        
+        # PID 출력을 속도로 변환 (절댓값)
+        speed = abs(pid_output)
+        speed = max(10, min(100, speed))  # 최소 10%, 최대 100%
+        
         # 방향에 따라 모터 제어
         if pid_output > 0:
             self.forward(speed)
         else:
             self.backward(speed)
         
-        return current_rpm
+        return current_position
     
     def set_position_pid_parameters(self, kp=None, ki=None, kd=None):
         """위치 제어 PID 파라미터 설정"""
@@ -519,7 +558,9 @@ class FIT0405Motor:
     
     def set_speed_pid_parameters(self, kp=None, ki=None, kd=None):
         """속도 제어 PID 파라미터 설정"""
+        print(f"속도 PID 파라미터 업데이트 - Kp:{kp}, Ki:{ki}, Kd:{kd}")
         self.speed_pid.set_parameters(kp, ki, kd)
+        print("속도 PID 파라미터 업데이트 완료")
     
     def reset_pid_controllers(self):
         """모든 PID 컨트롤러 리셋"""

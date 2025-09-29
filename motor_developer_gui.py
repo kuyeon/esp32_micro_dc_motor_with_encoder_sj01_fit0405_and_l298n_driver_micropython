@@ -193,13 +193,14 @@ class MotorDeveloperGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         # ESP32 USB 포트: COM3, 디버깅 터미널 포트: COM3
-        self.motor = UARTMotorController('COM3', 9600)
+        self.motor = UARTMotorController('COM3', 115200)
         self.data_logger = DataLogger(self.motor)
         self.data_logger.data_updated.connect(self.update_data)
         
         # 메모리 최적화를 위한 데이터 구조
         self.data_history = []
         self.is_testing = False
+        self.is_auto_tuning = False  # 자동 튜닝 상태 관리
         
         # 성능 최적화를 위한 캐시 변수들
         self._last_rpm = 0
@@ -329,7 +330,7 @@ class MotorDeveloperGUI(QMainWindow):
         uart_layout.addWidget(QLabel("보드레이트:"), 1, 0)
         self.baudrate_combo = QComboBox()
         self.baudrate_combo.addItems(['9600', '19200', '38400', '57600', '115200'])
-        self.baudrate_combo.setCurrentText('9600')
+        self.baudrate_combo.setCurrentText('115200')
         uart_layout.addWidget(self.baudrate_combo, 1, 1)
         
         self.connect_btn = QPushButton("연결")
@@ -491,9 +492,19 @@ class MotorDeveloperGUI(QMainWindow):
         auto_tune_group = QGroupBox("자동 튜닝")
         auto_tune_layout = QVBoxLayout(auto_tune_group)
         
+        # 자동 튜닝 버튼들
+        auto_tune_btn_layout = QHBoxLayout()
+        
         self.auto_tune_btn = QPushButton("자동 PID 튜닝")
         self.auto_tune_btn.clicked.connect(self.auto_tune_pid)
-        auto_tune_layout.addWidget(self.auto_tune_btn)
+        auto_tune_btn_layout.addWidget(self.auto_tune_btn)
+        
+        self.stop_auto_tune_btn = QPushButton("튜닝 중지")
+        self.stop_auto_tune_btn.clicked.connect(self.stop_auto_tune)
+        self.stop_auto_tune_btn.setEnabled(False)
+        auto_tune_btn_layout.addWidget(self.stop_auto_tune_btn)
+        
+        auto_tune_layout.addLayout(auto_tune_btn_layout)
         
         # 프리셋 버튼들
         preset_layout = QHBoxLayout()
@@ -931,9 +942,37 @@ class MotorDeveloperGUI(QMainWindow):
         
     def auto_tune_pid(self):
         """자동 PID 튜닝"""
+        if self.is_auto_tuning:
+            self.log_message("자동 튜닝이 이미 실행 중입니다")
+            return
+            
         self.log_message("자동 PID 튜닝 시작")
+        self.is_auto_tuning = True
+        
+        # UI 상태 변경
+        self.auto_tune_btn.setEnabled(False)
+        self.stop_auto_tune_btn.setEnabled(True)
+        
         # 실제 튜닝은 별도 스레드에서 실행
         threading.Thread(target=self._auto_tune_thread, daemon=True).start()
+    
+    def stop_auto_tune(self):
+        """자동 튜닝 중지"""
+        if not self.is_auto_tuning:
+            self.log_message("자동 튜닝이 실행 중이 아닙니다")
+            return
+            
+        self.log_message("자동 PID 튜닝 중지 요청")
+        self.is_auto_tuning = False
+        
+        # 모터 정지
+        self.motor.stop()
+        
+        # UI 상태 복원
+        self.auto_tune_btn.setEnabled(True)
+        self.stop_auto_tune_btn.setEnabled(False)
+        
+        self.log_message("자동 PID 튜닝 중지됨")
         
     def _auto_tune_thread(self):
         """자동 튜닝 스레드"""
@@ -950,6 +989,11 @@ class MotorDeveloperGUI(QMainWindow):
         best_score = float('inf')
         
         for config in test_configs:
+            # 중지 요청 확인
+            if not self.is_auto_tuning:
+                self.log_message("자동 튜닝이 중지되었습니다")
+                break
+                
             self.log_message(f"테스트: {config['name']}")
             
             # 테스트 실행
@@ -958,16 +1002,21 @@ class MotorDeveloperGUI(QMainWindow):
             )
             self.motor.reset_position()
             
-            # 5초간 테스트
+            # 5초간 테스트 (중지 요청 확인 포함)
             start_time = time.time()
             rpm_measurements = []
             
-            while time.time() - start_time < 5:
+            while time.time() - start_time < 5 and self.is_auto_tuning:
                 current_rpm = self.motor.control_speed_pid(target_rpm)
                 rpm_measurements.append(current_rpm)
                 time.sleep(0.1)
                 
             self.motor.stop()
+            
+            # 중지 요청 확인
+            if not self.is_auto_tuning:
+                self.log_message("자동 튜닝이 중지되었습니다")
+                break
             
             # 성능 평가
             if rpm_measurements:
@@ -984,16 +1033,27 @@ class MotorDeveloperGUI(QMainWindow):
                     best_score = score
                     best_config = config
                     
-            time.sleep(1)
+            # 중지 요청 확인 후 대기
+            if self.is_auto_tuning:
+                time.sleep(1)
             
-        if best_config:
+        # UI 상태 복원
+        self.auto_tune_btn.setEnabled(True)
+        self.stop_auto_tune_btn.setEnabled(False)
+        
+        # 튜닝이 완료된 경우 결과 적용
+        if best_config and self.is_auto_tuning:
             self.log_message(f"최적 설정: {best_config['name']} - Kp:{best_config['kp']}, Ki:{best_config['ki']}, Kd:{best_config['kd']}")
             # UI에 최적 설정 적용
             self.kp_spinbox.setValue(best_config['kp'])
             self.ki_spinbox.setValue(best_config['ki'])
             self.kd_spinbox.setValue(best_config['kd'])
+            self.log_message("자동 PID 튜닝 완료")
         else:
-            self.log_message("자동 튜닝 실패")
+            self.log_message("자동 튜닝이 중지되었거나 실패했습니다")
+            
+        # 상태 초기화
+        self.is_auto_tuning = False
             
     def move_to_position(self):
         """위치로 이동"""

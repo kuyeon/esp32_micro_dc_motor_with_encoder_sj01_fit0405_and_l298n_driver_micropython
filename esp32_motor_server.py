@@ -162,7 +162,9 @@ class MotorServer:
                 kp = data.get('kp', 0.3)
                 ki = data.get('ki', 2.0)
                 kd = data.get('kd', 0.1)
+                print(f"속도 PID 파라미터 설정 - Kp:{kp}, Ki:{ki}, Kd:{kd}")
                 self.motor.set_speed_pid_parameters(kp=kp, ki=ki, kd=kd)
+                print("속도 PID 파라미터 설정 완료")
                 self.send_response(True, {'kp': kp, 'ki': ki, 'kd': kd}, "속도 PID 파라미터 설정됨")
                 
             elif command == 'set_position_pid':
@@ -174,7 +176,9 @@ class MotorServer:
                 
             elif command == 'control_speed_pid':
                 target_rpm = data.get('target_rpm', 50.0)
+                print(f"PID 속도 제어 명령 수신 - 목표 RPM: {target_rpm}")
                 current_rpm = self.motor.control_speed_pid(target_rpm)
+                print(f"PID 속도 제어 완료 - 현재 RPM: {current_rpm}")
                 self.send_response(True, {'current_rpm': current_rpm, 'target_rpm': target_rpm})
                 
             elif command == 'control_position_pid':
